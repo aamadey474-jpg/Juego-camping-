@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Camping de El Colorado · Realidad mixta</title>
+<!-- ARCHIVOS LOCALES (sin internet), en la misma carpeta que este index.html:
+ libs/three.min.js            -> three.js r128 (cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js)
+ mediapipe/vision_bundle.mjs  -> paquete npm @mediapipe/tasks-vision (carpeta dist o root)
+ mediapipe/wasm/              -> carpeta wasm de ese mismo paquete
+ mediapipe/pose_landmarker_lite.task -> storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task
+ Abrir con servidor local:  python -m http.server  y entrar a http://localhost:8000 -->
+<style>
+:root{--v:#1f5d3a;--r:#a8412a;--o:#f4b942;--c:#fff6e0}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;overflow:hidden;background:#1f5d3a;font-family:"Trebuchet MS",Verdana,sans-serif;color:var(--c)}
+#g{position:fixed;inset:0;width:100%;height:100%}
+video{display:none}
+.ov{position:fixed;inset:0;display:none;align-items:center;justify-content:center;flex-direction:column;text-align:center;padding:3vh 6vw;background:rgba(18,48,30,.9);font-size:clamp(22px,3.2vw,46px);line-height:1.3}
+.ov.on{display:flex}.ov.clear{background:none;pointer-events:none;text-shadow:0 3px 6px #000}
+h1{font-size:1.4em;margin:.1em 0;color:var(--o)}
+small{display:block;max-width:1150px;font-size:.62em;opacity:.95;margin:.3em 0}
+button,input{font:inherit;border-radius:14px;border:0;padding:.3em .9em;margin:.3em}
+button{background:var(--o);color:#3a2310;font-weight:bold;cursor:pointer}
+input[type=number]{width:3.5em;text-align:center}
+#hud{position:fixed;top:1vh;left:2vw;right:2vw;display:flex;justify-content:space-between;font-size:clamp(20px,2.6vw,40px);font-weight:bold;text-shadow:0 2px 5px #000;pointer-events:none}
+.op{display:inline-block;margin:.2em .4em;padding:.25em .7em;border-radius:14px;background:var(--r);width:45%;vertical-align:top}
+#bar{height:16px;background:var(--o);width:0;border-radius:8px;margin:.3em 0}
+</style>
+<canvas id="g"></canvas><video id="v" playsinline muted></video>
+<div id="hud"><span id="hs"></span><span id="hl"></span><span id="hp"></span></div>
+<div class="ov on" id="ov">
+<small>DIA · Aprendé jugando</small>
+<h1>Recorrido por el Camping de El Colorado</h1>
+<small>Caminá en el lugar para avanzar. Pasá al costado para cambiar de carril. Levantá la mano para agarrar monedas y para responder: mano izquierda = A, mano derecha = B. Necesitás 2 metros libres adelante, luz de frente y nada de sillas ni mochilas cerca.</small>
+<div>Peso (kg): <input id="kg" type="number" value="60" min="20" max="200"> <label><input id="sit" type="checkbox"> Modo sentado</label></div>
+<button id="go">Empezar</button>
+<small>La imagen de la cámara se procesa solo en esta computadora: no se guarda ni se envía a internet (Ley 25.326). Jugá solo si querés.</small>
+</div>
+<script type="module">
+// Primero busca las bibliotecas locales (sin internet); si no están, las baja de internet.
+const lod=u=>new Promise((ok,no)=>{const s=document.createElement('script');s.src=u;s.onload=ok;s.onerror=no;document.head.appendChild(s)});
+let PoseLandmarker,FilesetResolver;
+try{try{await lod("libs/three.min.js")}catch(e){await lod("https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js")}
+ let MP;try{MP=await import("./mediapipe/vision_bundle.mjs")}catch(e){MP=await import("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs")}
+ ({PoseLandmarker,FilesetResolver}=MP)}
+catch(e){document.getElementById('ov').innerHTML='<h1>No cargaron las bibliotecas</h1><small>'+e+'<br>Revisá la conexión o las carpetas libs y mediapipe.</small>';throw e}
+// ---- Ajustes (tocá acá si la detección falla) ----
+const C={STEP:.22,LANE:.12,HAND:.15,CAL:3,SPEED:5,SEP:55,HOLD:.6,READ:3.5,
+ MODEL:"mediapipe/pose_landmarker_lite.task",WASM:"mediapipe/wasm",
+ MODEL2:"https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/latest/pose_landmarker_lite.task",
+ WASM2:"https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"};
+// ---- Lugares y fichas (datos de prensa y sitios oficiales: A VERIFICAR con fuente local) ----
+const S=[
+{n:"Puente Libertad",d:"El camping está en las afueras, sobre la ruta provincial 1, a metros del puente Libertad.",x:"El puente une El Colorado con Chaco y es famoso por sus atardeceres.",q:"¿Con qué provincia une el puente a El Colorado?",o:["Chaco","Corrientes"],c:0,f:"Sitios Naturales; Formosa Hermosa"},
+{n:"Arboleda y parrillas",d:"El camping municipal tiene 17 hectáreas, parrillas, mesas y mucha sombra.",x:"Se puede entrar a cualquier hora del día.",q:"¿Cuánto cuesta entrar al camping?",o:["Se paga entrada","Es gratis"],c:1,f:"El Destape (Télam); Formosa Hermosa"},
+{n:"Circuito de mountain bike",d:"Hay circuitos de mountain bike y senderos para caminar y mirar aves.",x:"Para usar los circuitos hay que ir con bicicleta propia.",q:"¿Qué tenés que llevar para el circuito?",o:["Bicicleta propia","Se alquila ahí"],c:0,f:"El Destape (Télam)"},
+{n:"Parque acuático",d:"Se inauguró en 2019 dentro del camping: siete piletas y toboganes de siete metros.",x:"Funciona en verano, de diciembre a marzo.",q:"¿Cuántas piletas tiene?",o:["Tres","Siete"],c:1,f:"Siempre Formosa; Noticias D; Sitios Naturales"},
+{n:"Río Bermejo",d:"Se llama así por el color rojizo de sus aguas y es el límite natural con Chaco.",x:"En el camping no se puede nadar en el río, pero sí pescar desde la orilla.",q:"¿Qué se puede hacer en el río?",o:["Pescar desde la orilla","Nadar"],c:0,f:"El Destape (Télam); Hotelvip"},
+{n:"Visitantes de toda la región",d:"En la primera quincena de enero de 2022 entraron unos 40.000 turistas al parque acuático y al camping.",x:"Llegan colectivos de Chaco, Corrientes y el norte de Santa Fe.",q:"¿De dónde llegan colectivos al camping?",o:["Chaco, Corrientes y Santa Fe","Misiones y Salta"],c:0,f:"El Destape (Télam)"},
+{n:"La historia de El Colorado",d:"El pueblo nació el 11 de febrero de 1936, con la primera subcomisaría a cargo del sargento Pedro Barraza.",x:"En 1944 fue Comisión de Fomento y 13 años después, municipio.",q:"¿En qué año nació El Colorado?",o:["1936","1957"],c:0,f:"Noticias D; Formosa Hermosa"}];
+const $=i=>document.getElementById(i),ov=$('ov'),vid=$('v'),sit=$('sit');
+const show=(h,k)=>{ov.innerHTML=h;ov.className='ov on'+(k?' clear':'')},hide=()=>ov.className='ov';
+// ---- Mundo 3D ----
+const R=new THREE.WebGLRenderer({canvas:$('g')}),sc=new THREE.Scene(),cam=new THREE.PerspectiveCamera(60,1,.1,130);
+sc.background=new THREE.Color(0x9fd8f0);sc.fog=new THREE.Fog(0x9fd8f0,25,100);sc.add(cam);
+sc.add(new THREE.HemisphereLight(0xffffff,0x557744,1.2));
+const TOT=(S.length+1)*C.SEP,mat=c=>new THREE.MeshLambertMaterial({color:c});
+const box=(w,h,d,c,x,y,z)=>{const m=new THREE.Mesh(new THREE.BoxGeometry(w,h,d),mat(c));m.position.set(x,y,z);sc.add(m);return m};
+box(80,.1,TOT+80,0x4f9a54,0,-.06,-TOT/2);box(8,.12,TOT+80,0xc9a27a,0,0,-TOT/2);
+box(30,.1,TOT+80,0xa8412a,34,.02,-TOT/2);
+[-1.1,1.1].forEach(x=>box(.1,.14,TOT+80,0xfff6e0,x,.02,-TOT/2));
+const pal=[0xe8c9a0,0xd98f6a,0xf2e2b8,0x9cc5c9];
+for(let z=8;z>-TOT-30;z-=10)for(const s of[-1,1]){
+ const h=3+Math.random()*5;box(4+Math.random()*3,h,6,pal[Math.random()*4|0],s*(10+Math.random()*3),h/2,z);
+ const t=box(.5,2,.5,0x6b4a2a,s*5.8,1,z+5),k=new THREE.Mesh(new THREE.ConeGeometry(1.4,3.5,8),mat(0x2f7d3f));k.position.set(s*5.8,3.6,z+5);sc.add(k)}
+function tex(t){const c=document.createElement('canvas');c.width=512;c.height=96;const g=c.getContext('2d');g.fillStyle='#a8412a';g.fillRect(0,0,512,96);
+ g.fillStyle='#fff6e0';g.font='bold 40px Verdana';g.textAlign='center';g.textBaseline='middle';g.fillText(t,256,50);return new THREE.CanvasTexture(c)}
+S.forEach((s,i)=>{const z=-(i+1)*C.SEP;box(.6,7,.6,0x6b4a2a,-4.3,3.5,z);box(.6,7,.6,0x6b4a2a,4.3,3.5,z);
+ const b=new THREE.Mesh(new THREE.PlaneGeometry(8.6,1.6),new THREE.MeshBasicMaterial({map:tex(s.n)}));b.position.set(0,6,z);sc.add(b)});
+const items=[];
+for(let i=0;i<S.length;i++)for(let k=0;k<5;k++){const z=-(i*C.SEP+10+k*8),l=(Math.random()*3|0)-1,coin=Math.random()<.6;
+ const m=coin?new THREE.Mesh(new THREE.CylinderGeometry(.5,.5,.12,20),mat(0xf4b942)):new THREE.Mesh(new THREE.BoxGeometry(1.6,1.2,1),mat(0x7a4a2a));
+ if(coin)m.rotation.x=Math.PI/2;m.position.set(l*2.2,coin?1.6:.6,z);sc.add(m);items.push({m,l,coin,done:false})}
+const pm=new THREE.MeshBasicMaterial({transparent:true,side:THREE.DoubleSide,depthWrite:false}),pl=new THREE.Mesh(new THREE.PlaneGeometry(4.27,3.2),pm);
+pl.position.set(0,-.5,-3.5);pl.scale.x=-1;cam.add(pl);
+onresize=()=>{R.setSize(innerWidth,innerHeight,false);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()};onresize();
+// ---- Cámara y silueta ----
+const cv=document.createElement('canvas'),cx2=cv.getContext('2d',{willReadFrequently:true});let pose,ctex;
+const inp={ok:false,mx:.5,kd:0,hl:0,hr:0};
+function onRes(r){const m=r.segmentationMasks&&r.segmentationMasks[0];
+ if(m){const w=m.width,h=m.height;if(!ctex){cv.width=w;cv.height=h;ctex=new THREE.CanvasTexture(cv);ctex.minFilter=THREE.LinearFilter;pm.map=ctex;pm.needsUpdate=true}
+  cx2.drawImage(vid,0,0,w,h);const im=cx2.getImageData(0,0,w,h),a=m.getAsFloat32Array();
+  for(let i=0;i<a.length;i++)im.data[i*4+3]=a[i]>.5?255:0;cx2.putImageData(im,0,0);ctex.needsUpdate=true;m.close()}
+ const l=r.landmarks&&r.landmarks[0];inp.ok=!!l;if(!l)return;
+ const sx=(l[11].x+l[12].x)/2,sy=(l[11].y+l[12].y)/2,hx=(l[23].x+l[24].x)/2,hy=(l[23].y+l[24].y)/2,T=Math.hypot(sx-hx,sy-hy)||.3;
+ inp.mx=1-(sit.checked?sx:hx);inp.kd=(l[25].y-l[26].y)/T;
+ inp.hl=l[15].y<l[11].y-C.HAND*T;inp.hr=l[16].y<l[12].y-C.HAND*T}
+// ---- Juego ----
+let st='start',P=0,cx=0,lane=0,si=0,score=0,steps=0,mt=0,t=0,ls=0,lastStep=-9,stun=0,msg='',msgT=0,calT=0,calSum=0,calN=0,calMx=.5,ft=0,ans=-1,fb=0,hA=0,hB=0,last=performance.now(),lastVT=-1,kg=60,hits=0;
+$('go').onclick=async()=>{kg=+$('kg').value||60;show('<h1>Cargando…</h1><small>Preparando la cámara y el modelo.</small>');
+ let paso='el modelo de pose';try{const mk=async(w,m)=>PoseLandmarker.createFromOptions(await FilesetResolver.forVisionTasks(w),{baseOptions:{modelAssetPath:m},runningMode:"VIDEO",numPoses:1,outputSegmentationMasks:true});
+  try{pose=await mk(C.WASM,C.MODEL)}catch(e){pose=await mk(C.WASM2,C.MODEL2)}
+  paso='la cámara';vid.srcObject=await navigator.mediaDevices.getUserMedia({video:{width:320,height:240,facingMode:"user"}});await vid.play();st='cal'}
+ catch(e){show('<h1>No pude cargar '+paso+'</h1><small>'+e.message+'<br>Revisá la conexión a internet (o las carpetas libs y mediapipe) y permití la cámara. Abrilo desde el enlace de GitHub Pages, no desde la vista previa del chat. Más detalles: tecla F12.</small><button onclick="location.reload()">Reintentar</button>')}};
+function ficha(){const f=S[si];ft=0;ans=-1;hA=hB=0;
+ show(`<h1>${f.n}</h1><small>${f.d}<br>${f.x}</small><div>${f.q}</div><div><span class="op">A · ${f.o[0]}</span><span class="op">B · ${f.o[1]}</span></div><div id="bar"></div><small id="hint"></small><small>Fuente: ${f.f}</small>`)}
+function choose(k){const f=S[si],ok=k===f.c;if(ok)score+=20;ans=k;fb=3.5;
+ show(`<h1>${ok?'¡Correcto! +20':'Casi…'}</h1><small>La respuesta era: ${f.o[f.c]}</small>`)}
+function fin(){st='end';const kcal=3.5*kg*mt/3600;
+ show(`<h1>¡Llegaste al final!</h1><div>Puntaje: ${score} · Pasos: ${steps}</div><div>Tiempo en movimiento: ${Math.round(mt)} s</div><div>Calorías: ${kcal.toFixed(1)} (estimación, no es una medición)</div><small>Pasaste por ${S.length} lugares. Descansá y tomá agua antes de la próxima partida. Datos de prensa y sitios oficiales: verificalos y citá la fuente.</small><button onclick="location.reload()">Jugar de nuevo</button>`)}
+function loop(now){requestAnimationFrame(loop);const dt=Math.min(.05,(now-last)/1000);last=now;t+=dt;
+ if(pose&&vid.readyState>=2&&vid.currentTime!==lastVT){lastVT=vid.currentTime;pose.detectForVideo(vid,now,onRes)}
+ if(st==='cal'){if(inp.ok){calT+=dt;calSum+=inp.mx;calN++}else{calT=0;calSum=calN=0}
+  show(inp.ok?`<h1>Quedate quieto</h1><div style="font-size:2.5em">${Math.ceil(C.CAL-calT)}</div>`:'<h1>No te veo entero</h1><small>Alejate hasta que se vea todo el cuerpo y poné la luz de frente.</small>',1);
+  if(calT>=C.CAL){calMx=calSum/calN;st='play';hide()}}
+ else if(st==='play'){
+  if(inp.ok){lane=inp.mx<calMx-C.LANE?-1:inp.mx>calMx+C.LANE?1:0;
+   if(!sit.checked){const s=inp.kd>C.STEP?1:inp.kd<-C.STEP?-1:0;if(s&&s!==ls){if(ls){steps++;lastStep=t}ls=s}}}
+  const mv=inp.ok&&(sit.checked||t-lastStep<.9);stun-=dt;msgT-=dt;
+  if(mv&&stun<=0){P+=C.SPEED*dt;mt+=dt}
+  for(const it of items){if(it.done)continue;const d=it.m.position.z+P;
+   if(it.coin)it.m.position.y=1.6+Math.sin(t*4)*.15;
+   if(Math.abs(d)<1.2&&Math.abs(it.m.position.x-cx)<1.2){
+    if(it.coin&&(inp.hl||inp.hr)){it.done=true;it.m.visible=false;score+=5;msg='+5';msgT=1}
+    else if(!it.coin&&Math.abs(d)<.8){it.done=true;score=Math.max(0,score-5);stun=.8;msg='¡Tropezaste! -5';msgT=1.2}}}
+  if(P>=(si+1)*C.SEP){st='ficha';ficha()}}
+ else if(st==='ficha'){ft+=dt;
+  if(ans<0){$('hint').textContent=ft<C.READ?'Leé tranquilo…':'Levantá la mano izquierda (A) o la derecha (B) y mantenela';
+   if(ft>C.READ&&inp.ok){hA=inp.hl&&!inp.hr?hA+dt:0;hB=inp.hr&&!inp.hl?hB+dt:0;$('bar').style.width=Math.min(100,Math.max(hA,hB)/C.HOLD*100)+'%';
+    if(hA>=C.HOLD)choose(0);else if(hB>=C.HOLD)choose(1)}}
+  else{fb-=dt;if(fb<=0){si++;if(si>=S.length)fin();else{st='play';hide();P+=1.5}}}}
+ cx+=(lane*2.2-cx)*Math.min(1,dt*8);
+ cam.position.set(cx,2.4,-P+5.5);cam.lookAt(cx,1.6,-P-6);
+ $('hs').textContent='⭐ '+score;$('hl').textContent=msgT>0?msg:'Lugar '+Math.min(si+1,S.length)+' de '+S.length;$('hp').textContent='👣 '+steps;
+ R.render(sc,cam)}
+requestAnimationFrame(loop);
+</script>
+</html>
